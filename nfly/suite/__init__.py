@@ -2,7 +2,7 @@
 
 from .base import GameSuite, GymSuite, available_suites, get_suite, register
 from .runner import EpisodeResult, play_episode
-from . import classic  # noqa: F401  (registers "classic")
+from . import classic, minesweeper   # noqa: F401  (registers "classic")
 
 try:  # Atari needs ale-py; keep it optional
     from . import atari  # noqa: F401
