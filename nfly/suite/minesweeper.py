@@ -59,6 +59,8 @@ class MinesweeperEnv(gym.Env):
         m = self._revealed
         out[m] = self._counts[m].astype(np.float32) / 8.0 * 0.5        # revealed: [0, 0.5]
         return np.kron(out, np.ones((self.obs_scale, self.obs_scale), np.float32))
+    def _mask(self) -> np.ndarray:
+        return (~(self._revealed | self._flagged)).reshape(-1)
 
     def _won(self) -> bool:
         return bool(np.all(self._revealed | self._mines))
@@ -70,25 +72,24 @@ class MinesweeperEnv(gym.Env):
         self._revealed = np.zeros((self.h, self.w), dtype=bool)
         self._flagged = np.zeros((self.h, self.w), dtype=bool)
         self._done = False
-        return self._obs(), {}
+        return self._obs(), {"action_mask": self._mask()}
 
     def step(self, action: int):
         if self._done:
             raise RuntimeError("step() after episode end; call reset()")
         r, c = divmod(int(action), self.w)
-        if self._mines is None:                       # first click is always safe
+        if self._mines is None:
             self._place_mines(r, c, self.np_random)
         if self._revealed[r, c]:
-            return self._obs(), -0.05, False, False, {}
+            return self._obs(), -0.05, False, False, {"action_mask": self._mask()}
         if self._mines[r, c]:
             self._revealed |= self._mines
             self._done = True
-            return self._obs(), -1.0, True, False, {}
+            return self._obs(), -1.0, True, False, {"action_mask": self._mask()}
         n = self._flood_reveal(r, c)
         won = self._won()
         self._done = won
-        return self._obs(), n / (self.h * self.w) + (10.0 if won else 0.0), won, False, {}
-
+        return self._obs(), n / (self.h * self.w) + (10.0 if won else 0.0), won, False, {"action_mask": self._mask()}
     def render(self):
         if self.render_mode != "rgb_array":
             return None
@@ -118,7 +119,8 @@ class MinesweeperSuite(GameSuite):
     def games(self) -> list[str]:
         return list(GAMES)
 
-    def make(self, game, seed=None, render_mode=None, **kw):
+    def make(self, game, seed=None, render_mode=None, max_episode_steps=200, **kw):
         h, w, mines = GAMES.get(game, GAMES["beginner"])
         env = MinesweeperEnv(h, w, mines, render_mode=render_mode, **kw)
-        return self.finish(env, seed, normalize_obs=False)   # obs already in [0, 1]
+        env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
+        return self.finish(env, seed, normalize_obs=False)

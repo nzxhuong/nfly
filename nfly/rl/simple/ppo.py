@@ -9,7 +9,7 @@ import dataclasses
 
 import torch
 
-from .common import Tracker, collect, gae, replay, save_checkpoint
+from .common import Tracker, collect, gae, replay, save_checkpoint, get_mask
 
 
 @dataclasses.dataclass
@@ -58,7 +58,8 @@ def train_ppo(agent, venv, cfg: PPOConfig, device="cpu", seed: int = 0, log=None
     for g in opt.param_groups:
         g["base_lr"] = g["lr"]
     lr_scale = 1.0
-    obs, _ = venv.reset(seed=seed)
+    obs, info = venv.reset(seed=seed)
+    mask = get_mask(info, dev)
     h = agent.initial_state(n_envs)
     track = Tracker(log) if log else Tracker()
 
@@ -66,7 +67,7 @@ def train_ppo(agent, venv, cfg: PPOConfig, device="cpu", seed: int = 0, log=None
         frac = 1.0 - (update - 1) / cfg.updates if cfg.anneal_lr else 1.0
         for g in opt.param_groups:
             g["lr"] = g["base_lr"] * frac * lr_scale
-        ro, obs, h = collect(agent, venv, obs, h, cfg.rollout, dev, cfg.clip_reward)
+        ro, obs, mask, h = collect(agent, venv, obs, mask, h, cfg.rollout, dev, cfg.clip_reward)
         track.returns.extend(ro.returns)
         adv, v_target = gae(ro, cfg.gamma, cfg.lam)
         adv = (adv - adv.mean()) / (adv.std() + 1e-8)

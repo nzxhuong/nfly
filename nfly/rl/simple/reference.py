@@ -38,13 +38,13 @@ class MLPReference(nn.Module):
     def weights(self):
         return None
 
-    def forward(self, obs: torch.Tensor, h: torch.Tensor, weights=None):
+    def forward(self, obs: torch.Tensor, h: torch.Tensor, weights=None, mask: torch.Tensor | None = None):
         feats = self.body(obs.float())
-        return self.decoder.distribution(feats), self.value(feats).squeeze(-1), h
+        return self.decoder.distribution(feats, mask=mask), self.value(feats).squeeze(-1), h
 
-    def act(self, obs, h, greedy: bool = False):
+    def act(self, obs, h, greedy: bool = False, mask: torch.Tensor | None = None):
         with torch.no_grad():
-            dist, _, h = self(obs, h)
+            dist, _, h = self(obs, h, mask=mask)
             a = dist.mode if greedy else dist.sample()
         return self.decoder.to_env(a), h
 

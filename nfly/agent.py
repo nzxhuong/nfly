@@ -220,22 +220,19 @@ class FlyAgent(nn.Module):
             h = self.brain.step(h, u, weights); states.append(h)
         return states
 
-    def forward(self, obs: torch.Tensor, h: torch.Tensor, weights: Weights | None = None):
+    def forward(self, obs: torch.Tensor, h: torch.Tensor, weights: Weights | None = None, mask: torch.Tensor | None = None):
         """Returns (action distribution, value (B,), new h)."""
         feats, h = self.step(obs, h, weights)
-        return self.decoder.distribution(feats), self.value(feats).squeeze(-1), h
+        return self.decoder.distribution(feats, mask=mask), self.value(feats).squeeze(-1), h
 
-    def act(self, obs, h, greedy: bool = False):
-        """Convenience for evaluation: returns (env action, new h)."""
-        action, h, _, _ = self.act_traced(obs, h, greedy)
+    def act(self, obs, h, greedy: bool = False, mask: torch.Tensor | None = None):
+        action, h, _, _ = self.act_traced(obs, h, greedy, mask=mask)
         return action, h
 
-    def act_traced(self, obs, h, greedy: bool = False):
-        """act() that also returns the action distribution and the per-sub-step states, so a
-        viewer gets action, probabilities and brain activity from one pass."""
+    def act_traced(self, obs, h, greedy: bool = False, mask: torch.Tensor | None = None):
         with torch.no_grad():
             states = self.trace(obs, h)
-            dist = self.decoder.distribution(self.decoder.features(states[-1]))
+            dist = self.decoder.distribution(self.decoder.features(states[-1]), mask=mask)
             a = dist.mode if greedy else dist.sample()
         return self.decoder.to_env(a), states[-1], dist, states
 

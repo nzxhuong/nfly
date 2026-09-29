@@ -19,6 +19,12 @@ def finished_returns(info: dict) -> list[float]:
             mask = np.asarray(src.get("_episode", ep.get("_r", np.ones(len(ep["r"]), bool))))
             return [float(x) for x in np.asarray(ep["r"])[mask]]
     return []
+def get_mask(info: dict, device) -> torch.Tensor | None:
+    """Pull a per-step valid-action mask out of info, if the env provides one (the
+    "action_mask" convention used by maskable-PPO style tooling). None if absent, which
+    every downstream call treats as "no masking"."""
+    m = info.get("action_mask") if isinstance(info, dict) else None
+    return None if m is None else torch.as_tensor(m, dtype=torch.bool, device=device)
 
 
 def log_line(msg: str) -> None:
@@ -29,34 +35,37 @@ def log_line(msg: str) -> None:
 class Rollout:
     """One truncated-BPTT segment collected from a vector env (time-major lists of (n_envs, ...))."""
 
-    obs: list          # T x (n_envs, ...) numpy
-    actions: list      # T x (n_envs, ...) tensors
-    rewards: list      # T x (n_envs,) tensors
-    dones: list        # T x (n_envs,) float tensors, 1 where the episode ended at this step
-    logps: list        # T x (n_envs,) tensors (behaviour policy)
-    values: list       # T x (n_envs,) tensors
-    h0: torch.Tensor   # (n_envs, N) hidden state at the start of the segment
-    boot: torch.Tensor # (n_envs,) value estimate after the last step
+    obs: list
+    masks: list        # T x (n_envs, n_actions) bool tensors, or T x None if the env has no mask
+    actions: list
+    rewards: list
+    dones: list
+    logps: list
+    values: list
+    h0: torch.Tensor
+    boot: torch.Tensor
     returns: list[float]
 
 
-def collect(agent, venv, obs, h, steps: int, device, clip_reward: bool) -> tuple[Rollout, np.ndarray, torch.Tensor]:
-    """Run the agent for `steps` env steps, returning the rollout, the last obs and the last h."""
+def collect(agent, venv, obs, mask, h, steps: int, device, clip_reward: bool):
+    """Run the agent for `steps` env steps. `mask` is the action mask valid for `obs` at
+    entry (from the previous call's final step, or venv.reset() the first time)."""
     h0 = h.detach()
-    obs_l, act_l, rew_l, done_l, logp_l, val_l, returns = [], [], [], [], [], [], []
+    obs_l, mask_l, act_l, rew_l, done_l, logp_l, val_l, returns = [], [], [], [], [], [], [], []
     with torch.no_grad():
         for _ in range(steps):
-            obs_l.append(np.asarray(obs))
-            dist, value, h = agent(torch.as_tensor(np.asarray(obs), device=device), h)
+            obs_l.append(np.asarray(obs)); mask_l.append(mask)
+            dist, value, h = agent(torch.as_tensor(np.asarray(obs), device=device), h, mask=mask)
             a = dist.sample()
             obs, r, term, trunc, info = venv.step(agent.decoder.to_env(a))
+            mask = get_mask(info, device)                          # mask for the *new* obs
             d = torch.as_tensor(np.logical_or(term, trunc), dtype=torch.float32, device=device)
             act_l.append(a); logp_l.append(dist.log_prob(a)); val_l.append(value); done_l.append(d)
             rew_l.append(torch.as_tensor(np.sign(r) if clip_reward else r, dtype=torch.float32, device=device))
-            h = h * (1 - d).unsqueeze(1)                           # reset finished episodes
+            h = h * (1 - d).unsqueeze(1)
             returns.extend(finished_returns(info))
-        _, boot, _ = agent(torch.as_tensor(np.asarray(obs), device=device), h)
-    return Rollout(obs_l, act_l, rew_l, done_l, logp_l, val_l, h0, boot, returns), obs, h
+        _, boot, _ = agent(torch.as_tensor(np.asarray(obs), device=device), h, mask=mask)
+    return Rollout(obs_l, mask_l, act_l, rew_l, done_l, logp_l, val_l, h0, boot, returns), obs, mask, h
 
 
 def gae(ro: Rollout, gamma: float, lam: float) -> tuple[torch.Tensor, torch.Tensor]:
@@ -82,11 +91,11 @@ def replay(agent, ro: Rollout, env_idx: torch.Tensor, device):
     weights = agent.weights()
     logps, ents, values = [], [], []
     for t in range(len(ro.obs)):
-        dist, value, h = agent(torch.as_tensor(ro.obs[t][env_idx.cpu().numpy()], device=device), h, weights)
+        m = None if ro.masks[t] is None else ro.masks[t][env_idx]
+        dist, value, h = agent(torch.as_tensor(ro.obs[t][env_idx.cpu().numpy()], device=device), h, weights, mask=m)
         logps.append(dist.log_prob(ro.actions[t][env_idx])); ents.append(dist.entropy()); values.append(value)
         h = h * (1 - ro.dones[t][env_idx]).unsqueeze(1)
     return torch.stack(logps), torch.stack(ents), torch.stack(values)
-
 
 class Tracker:
     def __init__(self, log=log_line):

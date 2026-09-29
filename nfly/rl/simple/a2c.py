@@ -7,7 +7,7 @@ import dataclasses
 
 import torch
 
-from .common import Tracker, collect, gae, replay, save_checkpoint
+from .common import Tracker, collect, gae, replay, save_checkpoint, get_mask
 
 
 @dataclasses.dataclass
@@ -30,13 +30,14 @@ def train_a2c(agent, venv, cfg: A2CConfig, device="cpu", seed: int = 0, log=None
     dev = torch.device(device)
     n_envs = venv.num_envs
     opt = torch.optim.Adam([q for q in agent.parameters() if q.requires_grad], lr=cfg.lr)
-    obs, _ = venv.reset(seed=seed)
+    obs, info = venv.reset(seed=seed)
+    mask = get_mask(info, dev)
     h = agent.initial_state(n_envs)
     track = Tracker(log) if log else Tracker()
     all_envs = torch.arange(n_envs, device=dev)
 
     for update in range(1, cfg.updates + 1):
-        ro, obs, h = collect(agent, venv, obs, h, cfg.rollout, dev, cfg.clip_reward)
+        ro, obs, mask, h = collect(agent, venv, obs, mask, h, cfg.rollout, dev, cfg.clip_reward)
         track.returns.extend(ro.returns)
         adv, v_target = gae(ro, cfg.gamma, cfg.lam)
         logp, ent, value = replay(agent, ro, all_envs, dev)        # one pass with gradients

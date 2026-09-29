@@ -169,8 +169,11 @@ class DiscreteDecoder(ActionDecoder):
     def dist_inputs(self, feats):
         return self.head(feats)
 
-    def distribution(self, feats):
-        return Categorical(logits=self.dist_inputs(feats))
+    def distribution(self, feats, mask: torch.Tensor | None = None):
+        logits = self.dist_inputs(feats)
+        if mask is not None:
+            logits = logits.masked_fill(~mask, float("-inf"))   # invalid actions get zero probability
+        return Categorical(logits=logits)
 
 
 class BoxDecoder(ActionDecoder):
@@ -193,7 +196,7 @@ class BoxDecoder(ActionDecoder):
         mu = self.lo + (mu + 1) / 2 * (self.hi - self.lo)
         return torch.cat([mu, self.log_std.expand_as(mu)], dim=-1)
 
-    def distribution(self, feats):
+    def distribution(self, feats, mask: torch.Tensor | None = None):   # continuous actions: nothing to mask
         mu, log_std = self.dist_inputs(feats).chunk(2, dim=-1)
         return Independent(Normal(mu, log_std.exp()), 1)
 
